@@ -32,7 +32,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/).
 - `.gitignore` — Zig build artefacts exclusions
 - `build.zig` — Zig build configuration
 - `build.zig.zon` — Zig package manifest (depends on ztree)
-- `DESIGN.md` — renderer design, tag mapping, and checklist
+- `CHANGELOG.md` — release history
 - `src/` — library source
   - `root.zig` — public API: `render(node, writer)`
 
