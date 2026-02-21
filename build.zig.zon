@@ -1,0 +1,17 @@
+.{
+    .name = .ztree_md,
+    .version = "0.1.0",
+    .fingerprint = 0xa6392ce9b6be89ab,
+    .minimum_zig_version = "0.15.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+    .dependencies = .{
+        .ztree = .{
+            .url = "git+https://github.com/erwagasore/ztree.git#main",
+            .hash = "ztree-0.1.0-y2WFIvc3AABCEQ_g8mYa0ln1WS8Jr1j3ImcUr8od-jUd",
+        },
+    },
+}
