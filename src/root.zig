@@ -566,7 +566,10 @@ test "text and raw — written as-is" {
 }
 
 test "fragment transparent, none empty" {
-    const f = try renderToString(ztree.fragment(&.{ ztree.text("a"), ztree.text("b") }));
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f = try renderToString(try ztree.fragment(a, .{ ztree.text("a"), ztree.text("b") }));
     defer testing.allocator.free(f);
     try testing.expectEqualStrings("ab", f);
 
@@ -576,7 +579,9 @@ test "fragment transparent, none empty" {
 }
 
 test "unknown tag — children rendered without wrapper" {
-    const md = try renderToString(ztree.element("div", &.{}, &.{ztree.text("inside")}));
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const md = try renderToString(try ztree.element(arena.allocator(), "div", .{}, .{ ztree.text("inside") }));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("inside", md);
 }
@@ -584,28 +589,38 @@ test "unknown tag — children rendered without wrapper" {
 // -- block elements --
 
 test "headings — h1 and h6 boundaries" {
-    const h1 = try renderToString(ztree.element("h1", &.{}, &.{ztree.text("Top")}));
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const h1 = try renderToString(try ztree.element(a, "h1", .{}, .{ ztree.text("Top") }));
     defer testing.allocator.free(h1);
     try testing.expectEqualStrings("# Top\n", h1);
 
-    const h6 = try renderToString(ztree.element("h6", &.{}, &.{ztree.text("Deep")}));
+    const h6 = try renderToString(try ztree.element(a, "h6", .{}, .{ ztree.text("Deep") }));
     defer testing.allocator.free(h6);
     try testing.expectEqualStrings("###### Deep\n", h6);
 }
 
 test "paragraphs — blank line separation" {
-    const md = try renderToString(ztree.fragment(&.{
-        ztree.element("p", &.{}, &.{ztree.text("First.")}),
-        ztree.element("p", &.{}, &.{ztree.text("Second.")}),
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.fragment(a, .{
+        try ztree.element(a, "p", .{}, .{ ztree.text("First.") }),
+        try ztree.element(a, "p", .{}, .{ ztree.text("Second.") }),
     }));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("First.\n\nSecond.\n", md);
 }
 
 test "nested blockquotes" {
-    const md = try renderToString(ztree.element("blockquote", &.{}, &.{
-        ztree.element("blockquote", &.{}, &.{
-            ztree.element("p", &.{}, &.{ztree.text("Deep.")}),
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "blockquote", .{}, .{
+        try ztree.element(a, "blockquote", .{}, .{
+            try ztree.element(a, "p", .{}, .{ ztree.text("Deep.") }),
         }),
     }));
     defer testing.allocator.free(md);
@@ -613,11 +628,14 @@ test "nested blockquotes" {
 }
 
 test "unordered list — nested" {
-    const md = try renderToString(ztree.element("ul", &.{}, &.{
-        ztree.element("li", &.{}, &.{
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "ul", .{}, .{
+        try ztree.element(a, "li", .{}, .{
             ztree.text("parent"),
-            ztree.element("ul", &.{}, &.{
-                ztree.element("li", &.{}, &.{ztree.text("child")}),
+            try ztree.element(a, "ul", .{}, .{
+                try ztree.element(a, "li", .{}, .{ ztree.text("child") }),
             }),
         }),
     }));
@@ -626,11 +644,14 @@ test "unordered list — nested" {
 }
 
 test "ordered list — nested, sequential numbering" {
-    const md = try renderToString(ztree.element("ol", &.{}, &.{
-        ztree.element("li", &.{}, &.{
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "ol", .{}, .{
+        try ztree.element(a, "li", .{}, .{
             ztree.text("parent"),
-            ztree.element("ol", &.{}, &.{
-                ztree.element("li", &.{}, &.{ztree.text("child")}),
+            try ztree.element(a, "ol", .{}, .{
+                try ztree.element(a, "li", .{}, .{ ztree.text("child") }),
             }),
         }),
     }));
@@ -639,17 +660,23 @@ test "ordered list — nested, sequential numbering" {
 }
 
 test "task list — checked and unchecked" {
-    const md = try renderToString(ztree.element("ul", &.{}, &.{
-        ztree.element("li", &.{ztree.attr("checked", null)}, &.{ztree.text("done")}),
-        ztree.element("li", &.{ztree.attr("task", null)}, &.{ztree.text("todo")}),
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "ul", .{}, .{
+        try ztree.element(a, "li", .{ .checked = {} }, .{ ztree.text("done") }),
+        try ztree.element(a, "li", .{ .task = {} },    .{ ztree.text("todo") }),
     }));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("- [x] done\n- [ ] todo\n", md);
 }
 
 test "fenced code block with language" {
-    const md = try renderToString(ztree.element("pre", &.{}, &.{
-        ztree.element("code", &.{ztree.attr("class", "language-zig")}, &.{
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "pre", .{}, .{
+        try ztree.element(a, "code", .{ .class = "language-zig" }, .{
             ztree.text("const std = @import(\"std\");"),
         }),
     }));
@@ -658,33 +685,41 @@ test "fenced code block with language" {
 }
 
 test "fenced code block — triple backtick escalation" {
-    const md = try renderToString(ztree.element("pre", &.{}, &.{
-        ztree.element("code", &.{}, &.{ztree.text("some ``` inside")}),
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "pre", .{}, .{
+        try ztree.element(a, "code", .{}, .{ ztree.text("some ``` inside") }),
     }));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("````\nsome ``` inside\n````\n", md);
 }
 
 test "thematic break" {
-    const md = try renderToString(ztree.element("hr", &.{}, &.{}));
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const md = try renderToString(try ztree.element(arena.allocator(), "hr", .{}, .{}));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("---\n", md);
 }
 
 test "GFM table — alignment and pipe escaping" {
-    const md = try renderToString(ztree.element("table", &.{}, &.{
-        ztree.element("thead", &.{}, &.{
-            ztree.element("tr", &.{}, &.{
-                ztree.element("th", &.{}, &.{ztree.text("Name")}),
-                ztree.element("th", &.{ztree.attr("align", "center")}, &.{ztree.text("Age")}),
-                ztree.element("th", &.{ztree.attr("align", "right")}, &.{ztree.text("Score")}),
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "table", .{}, .{
+        try ztree.element(a, "thead", .{}, .{
+            try ztree.element(a, "tr", .{}, .{
+                try ztree.element(a, "th", .{},               .{ ztree.text("Name") }),
+                try ztree.element(a, "th", .{ .@"align" = "center" }, .{ ztree.text("Age") }),
+                try ztree.element(a, "th", .{ .@"align" = "right" },  .{ ztree.text("Score") }),
             }),
         }),
-        ztree.element("tbody", &.{}, &.{
-            ztree.element("tr", &.{}, &.{
-                ztree.element("td", &.{}, &.{ztree.text("Al|ice")}),
-                ztree.element("td", &.{}, &.{ztree.text("30")}),
-                ztree.element("td", &.{}, &.{ztree.text("95")}),
+        try ztree.element(a, "tbody", .{}, .{
+            try ztree.element(a, "tr", .{}, .{
+                try ztree.element(a, "td", .{}, .{ ztree.text("Al|ice") }),
+                try ztree.element(a, "td", .{}, .{ ztree.text("30") }),
+                try ztree.element(a, "td", .{}, .{ ztree.text("95") }),
             }),
         }),
     }));
@@ -700,46 +735,57 @@ test "GFM table — alignment and pipe escaping" {
 // -- inline elements --
 
 test "bold, italic, strikethrough" {
-    const md = try renderToString(ztree.element("p", &.{}, &.{
-        ztree.element("strong", &.{}, &.{ztree.text("b")}),
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "p", .{}, .{
+        try ztree.element(a, "strong", .{}, .{ ztree.text("b") }),
         ztree.text(" "),
-        ztree.element("em", &.{}, &.{ztree.text("i")}),
+        try ztree.element(a, "em",     .{}, .{ ztree.text("i") }),
         ztree.text(" "),
-        ztree.element("del", &.{}, &.{ztree.text("d")}),
+        try ztree.element(a, "del",    .{}, .{ ztree.text("d") }),
     }));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("**b** *i* ~~d~~\n", md);
 }
 
 test "inline code — backtick escalation" {
-    const md = try renderToString(ztree.element("code", &.{}, &.{ztree.text("a`b")}));
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const md = try renderToString(try ztree.element(arena.allocator(), "code", .{}, .{ ztree.text("a`b") }));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("`` a`b ``", md);
 }
 
 test "link with title" {
-    const md = try renderToString(ztree.element("a", &.{
-        ztree.attr("href", "https://example.com"),
-        ztree.attr("title", "Example"),
-    }, &.{ztree.text("click")}));
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "a",
+        .{ .href = "https://example.com", .title = "Example" },
+        .{ ztree.text("click") }));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("[click](https://example.com \"Example\")", md);
 }
 
 test "image with title" {
-    const md = try renderToString(ztree.element("img", &.{
-        ztree.attr("src", "photo.jpg"),
-        ztree.attr("alt", "A photo"),
-        ztree.attr("title", "My photo"),
-    }, &.{}));
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "img",
+        .{ .src = "photo.jpg", .alt = "A photo", .title = "My photo" },
+        .{}));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("![A photo](photo.jpg \"My photo\")", md);
 }
 
 test "hard line break" {
-    const md = try renderToString(ztree.element("p", &.{}, &.{
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "p", .{}, .{
         ztree.text("line one"),
-        ztree.element("br", &.{}, &.{}),
+        try ztree.element(a, "br", .{}, .{}),
         ztree.text("line two"),
     }));
     defer testing.allocator.free(md);
@@ -749,9 +795,12 @@ test "hard line break" {
 // -- nesting --
 
 test "list inside blockquote" {
-    const md = try renderToString(ztree.element("blockquote", &.{}, &.{
-        ztree.element("ul", &.{}, &.{
-            ztree.element("li", &.{}, &.{ztree.text("item")}),
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "blockquote", .{}, .{
+        try ztree.element(a, "ul", .{}, .{
+            try ztree.element(a, "li", .{}, .{ ztree.text("item") }),
         }),
     }));
     defer testing.allocator.free(md);
@@ -759,10 +808,13 @@ test "list inside blockquote" {
 }
 
 test "blockquote inside list" {
-    const md = try renderToString(ztree.element("ul", &.{}, &.{
-        ztree.element("li", &.{}, &.{
-            ztree.element("blockquote", &.{}, &.{
-                ztree.element("p", &.{}, &.{ztree.text("quoted")}),
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "ul", .{}, .{
+        try ztree.element(a, "li", .{}, .{
+            try ztree.element(a, "blockquote", .{}, .{
+                try ztree.element(a, "p", .{}, .{ ztree.text("quoted") }),
             }),
         }),
     }));
@@ -773,21 +825,24 @@ test "blockquote inside list" {
 // -- integration --
 
 test "full document" {
-    const md = try renderToString(ztree.fragment(&.{
-        ztree.element("h1", &.{}, &.{ztree.text("Title")}),
-        ztree.element("p", &.{}, &.{
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.fragment(a, .{
+        try ztree.element(a, "h1", .{}, .{ ztree.text("Title") }),
+        try ztree.element(a, "p", .{}, .{
             ztree.text("A paragraph with "),
-            ztree.element("strong", &.{}, &.{ztree.text("bold")}),
+            try ztree.element(a, "strong", .{}, .{ ztree.text("bold") }),
             ztree.text(" text."),
         }),
-        ztree.element("pre", &.{}, &.{
-            ztree.element("code", &.{ztree.attr("class", "language-zig")}, &.{
+        try ztree.element(a, "pre", .{}, .{
+            try ztree.element(a, "code", .{ .class = "language-zig" }, .{
                 ztree.text("const x = 42;"),
             }),
         }),
-        ztree.element("ul", &.{}, &.{
-            ztree.element("li", &.{}, &.{ztree.text("one")}),
-            ztree.element("li", &.{}, &.{ztree.text("two")}),
+        try ztree.element(a, "ul", .{}, .{
+            try ztree.element(a, "li", .{}, .{ ztree.text("one") }),
+            try ztree.element(a, "li", .{}, .{ ztree.text("two") }),
         }),
     }));
     defer testing.allocator.free(md);
