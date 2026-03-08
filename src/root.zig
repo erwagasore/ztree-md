@@ -17,6 +17,7 @@ const Node = ztree.Node;
 const Element = ztree.Element;
 const Attr = ztree.Attr;
 const WalkAction = ztree.WalkAction;
+const Walker = ztree.Walker;
 
 // ---------------------------------------------------------------------------
 // Lookup tables
@@ -44,6 +45,7 @@ const heading_levels = std.StaticStringMap(u8).initComptime(.{
 /// Write GFM Markdown for a ztree Node to any writer.
 pub fn render(node: Node, writer: anytype) !void {
     var r: MdRenderer(@TypeOf(writer)) = .{ .writer = writer };
+    r.walker = ztree.walker(&r);
     try ztree.renderWalk(&r, node);
 }
 
@@ -56,6 +58,7 @@ fn MdRenderer(Writer: type) type {
         const Self = @This();
 
         writer: Writer,
+        walker: Walker = undefined,
         prefix_buf: [256]u8 = undefined,
         prefix_len: usize = 0,
         has_prev_block: bool = false,
@@ -210,14 +213,9 @@ fn MdRenderer(Writer: type) type {
         //
         // Lists use .skip_children because list-item children need custom
         // inline/block mixed handling that differs from standard block
-        // separation. Nested content is walked via renderWalk re-entry.
-        //
-        // Explicit anyerror breaks the error-set inference cycle:
-        // renderWalk → elementOpen → renderList → renderWalk.
-        // The compiler knows this signature without analysing the body,
-        // so the cycle resolves.
+        // separation. Nested content is walked via Walker re-entry.
 
-        fn renderList(self: *Self, el: Element) anyerror!void {
+        fn renderList(self: *Self, el: Element) !void {
             const ordered = std.mem.eql(u8, el.tag, "ol");
             const indent = if (ordered) "   " else "  ";
             var n: usize = 1;
@@ -247,10 +245,10 @@ fn MdRenderer(Writer: type) type {
                         if (isBlockNode(li_child)) {
                             if (!emitted_any or had_inline) try self.writer.writeByte('\n');
                             had_inline = false;
-                            try ztree.renderWalk(self, li_child);
+                            try self.walker.walk(li_child);
                             emitted_any = true;
                         } else {
-                            try ztree.renderWalk(self, li_child);
+                            try self.walker.walk(li_child);
                             had_inline = true;
                             emitted_any = true;
                         }

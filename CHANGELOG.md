@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.1] — 2026-03-08
+
+### Features
+
+- **Walker re-entry** — list rendering uses ztree's type-erased `Walker` for re-entrant traversal instead of calling `renderWalk` directly. Removes the forced `anyerror` annotation on `renderList` — error sets are now inferred naturally through the function-pointer boundary.
+
+### Other
+
+- Update ztree dependency from v1.0.0 to v1.1.0.
+
 ## [0.2.0] — 2026-03-08
 
 ### Breaking Changes

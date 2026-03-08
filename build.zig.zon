@@ -1,6 +1,6 @@
 .{
     .name = .ztree_md,
-    .version = "0.2.0",
+    .version = "0.2.1",
     .fingerprint = 0xa6392ce9b6be89ab,
     .minimum_zig_version = "0.15.0",
     .paths = .{
@@ -10,8 +10,8 @@
     },
     .dependencies = .{
         .ztree = .{
-            .url = "git+https://github.com/erwagasore/ztree.git?ref=main#556cc515e9a6104cee9312a079cca89a47be72df",
-            .hash = "ztree-1.0.0-y2WFItcIAQAmVZ_QXtgfwGzW1eT-ZVRJMEQJP2OBBZS9",
+            .url = "git+https://github.com/erwagasore/ztree.git?ref=main#04e9c7723130cc232ba5469d19fdeb4a2b214dbd",
+            .hash = "ztree-1.1.0-y2WFIv4gAQCqU0DkA2AuYvbWRfpaesL0pr4510MKozPL",
         },
     },
 }
