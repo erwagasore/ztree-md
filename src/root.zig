@@ -1,18 +1,22 @@
 /// ztree-md — GFM (GitHub Flavoured Markdown) renderer for ztree.
 ///
 /// Architecture:
-///   render()        — public entry point
-///   renderNode()    — single recursive walker (Zig requires self-recursion
-///                     only for anytype; mutual recursion breaks error-set
-///                     inference). Composes leaf writers + pure helpers.
-///   Leaf writers    — write to writer, never call renderNode.
-///   Table writers   — own recursion domain (cell content), no renderNode.
-///   Pure helpers    — no writer, no side effects, data in → data out.
+///   render()           — public entry point, delegates to ztree.renderWalk.
+///   MdRenderer(Writer) — struct implementing the renderWalk protocol:
+///                          elementOpen / elementClose / onText / onRaw.
+///   elementOpen uses WalkAction:
+///     .continue        — simple wrappers (strong, em, headings, p, blockquote, a, del).
+///                          renderWalk recurses children and calls elementClose.
+///     .skip_children   — complex elements (pre, table, code, ul/ol, hr, br, img).
+///                          Handled entirely in elementOpen; no elementClose.
+///                          List rendering re-enters renderWalk for nested content.
+///   Free functions     — pure helpers and leaf writers shared across contexts.
 const std = @import("std");
 const ztree = @import("ztree");
 const Node = ztree.Node;
 const Element = ztree.Element;
 const Attr = ztree.Attr;
+const WalkAction = ztree.WalkAction;
 
 // ---------------------------------------------------------------------------
 // Lookup tables
@@ -24,7 +28,7 @@ const block_tags = std.StaticStringMap(void).initComptime(.{
     .{ "h4", {} },  .{ "h5", {} },  .{ "h6", {} },
     .{ "p", {} },   .{ "blockquote", {} },
     .{ "ul", {} },  .{ "ol", {} },
-    .{ "pre", {} },  .{ "hr", {} },  .{ "table", {} },
+    .{ "pre", {} }, .{ "hr", {} },  .{ "table", {} },
 });
 
 /// Heading tags → ATX prefix level.
@@ -34,160 +38,250 @@ const heading_levels = std.StaticStringMap(u8).initComptime(.{
 });
 
 // ---------------------------------------------------------------------------
-// Context — mutable state threaded through the walk
-// ---------------------------------------------------------------------------
-
-const Context = struct {
-    /// Line prefix for nesting (blockquote `> `, list indent).
-    prefix: []const u8 = "",
-    /// Whether a block element has been emitted (blank-line tracking).
-    has_prev_block: bool = false,
-};
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /// Write GFM Markdown for a ztree Node to any writer.
 pub fn render(node: Node, writer: anytype) !void {
-    var ctx = Context{};
-    try renderNode(node, writer, &ctx);
+    var r: MdRenderer(@TypeOf(writer)) = .{ .writer = writer };
+    try ztree.renderWalk(&r, node);
 }
 
 // ---------------------------------------------------------------------------
-// Walker — single recursive function
-//
-// Every branch that needs to recurse into children does so by calling
-// renderNode directly (self-recursion). Tag-specific output is delegated
-// to leaf writers and pure helpers defined below.
+// Renderer — struct implementing the ztree renderWalk protocol
 // ---------------------------------------------------------------------------
 
-fn renderNode(node: Node, writer: anytype, ctx: *Context) !void {
-    switch (node) {
-        .text => |t| try writer.writeAll(t),
-        .raw => |r| try writer.writeAll(r),
-        .fragment => |children| {
-            for (children) |child| try renderNode(child, writer, ctx);
-        },
-        .element => |e| {
-            try separateBlock(e.tag, writer, ctx);
+fn MdRenderer(Writer: type) type {
+    return struct {
+        const Self = @This();
 
-            if (heading_levels.get(e.tag)) |level| {
-                try writeHeadingPrefix(writer, ctx.prefix, level);
-                for (e.children) |child| try renderNode(child, writer, ctx);
-                try writer.writeByte('\n');
-            } else if (std.mem.eql(u8, e.tag, "p")) {
-                try writer.writeAll(ctx.prefix);
-                for (e.children) |child| try renderNode(child, writer, ctx);
-                try writer.writeByte('\n');
-            } else if (std.mem.eql(u8, e.tag, "blockquote")) {
-                var buf: [256]u8 = undefined;
-                var inner = childContext(&buf, ctx.prefix, "> ");
-                for (e.children) |child| try renderNode(child, writer, &inner);
-            } else if (std.mem.eql(u8, e.tag, "ul") or std.mem.eql(u8, e.tag, "ol")) {
-                const ordered = std.mem.eql(u8, e.tag, "ol");
-                const indent = if (ordered) "   " else "  ";
-                var n: usize = 1;
+        writer: Writer,
+        prefix_buf: [256]u8 = undefined,
+        prefix_len: usize = 0,
+        has_prev_block: bool = false,
 
-                for (e.children) |child| {
-                    const items: []const Node = switch (child) {
-                        .element => @as(*const [1]Node, &child),
-                        .fragment => |f| f,
+        // Frame stack for save/restore on nesting boundaries.
+        frames: [64]Frame = undefined,
+        depth: usize = 0,
+
+        const Frame = struct {
+            has_prev_block: bool,
+            prefix_len: usize,
+        };
+
+        // ── State management ─────────────────────────────────────────
+
+        fn prefix(self: *const Self) []const u8 {
+            return self.prefix_buf[0..self.prefix_len];
+        }
+
+        fn pushPrefix(self: *Self, suffix: []const u8) void {
+            if (self.prefix_len + suffix.len <= self.prefix_buf.len) {
+                @memcpy(self.prefix_buf[self.prefix_len..][0..suffix.len], suffix);
+                self.prefix_len += suffix.len;
+            }
+        }
+
+        fn pushFrame(self: *Self) void {
+            self.frames[self.depth] = .{
+                .has_prev_block = self.has_prev_block,
+                .prefix_len = self.prefix_len,
+            };
+            self.depth += 1;
+            self.has_prev_block = false;
+        }
+
+        fn popFrame(self: *Self) void {
+            self.depth -= 1;
+            const f = self.frames[self.depth];
+            self.has_prev_block = f.has_prev_block;
+            self.prefix_len = f.prefix_len;
+        }
+
+        // ── renderWalk protocol ──────────────────────────────────────
+
+        pub fn onText(self: *Self, content: []const u8) !void {
+            try self.writer.writeAll(content);
+        }
+
+        pub fn onRaw(self: *Self, content: []const u8) !void {
+            try self.writer.writeAll(content);
+        }
+
+        pub fn elementOpen(self: *Self, el: Element) !WalkAction {
+            // Block separation — blank line between consecutive block elements.
+            if (block_tags.has(el.tag)) {
+                if (self.has_prev_block) {
+                    try self.writer.writeAll(self.prefix());
+                    try self.writer.writeByte('\n');
+                }
+                self.has_prev_block = true;
+            }
+
+            // ── Block elements ──
+
+            if (heading_levels.get(el.tag)) |level| {
+                try writeHeadingPrefix(self.writer, self.prefix(), level);
+                return .@"continue";
+            }
+            if (std.mem.eql(u8, el.tag, "p")) {
+                try self.writer.writeAll(self.prefix());
+                return .@"continue";
+            }
+            if (std.mem.eql(u8, el.tag, "blockquote")) {
+                self.pushFrame();
+                self.pushPrefix("> ");
+                return .@"continue";
+            }
+            if (std.mem.eql(u8, el.tag, "ul") or std.mem.eql(u8, el.tag, "ol")) {
+                try self.renderList(el);
+                return .skip_children;
+            }
+            if (std.mem.eql(u8, el.tag, "pre")) {
+                const info = extractCodeInfo(el);
+                try writeCodeBlock(self.writer, self.prefix(), info.language, info.content);
+                return .skip_children;
+            }
+            if (std.mem.eql(u8, el.tag, "table")) {
+                const t = extractTableSections(el.children);
+                try writeTable(t.thead, t.tbody, self.writer, self.prefix());
+                return .skip_children;
+            }
+            if (std.mem.eql(u8, el.tag, "hr")) {
+                try writeThematicBreak(self.writer, self.prefix());
+                return .skip_children;
+            }
+
+            // ── Inline elements ──
+
+            if (std.mem.eql(u8, el.tag, "strong")) {
+                try self.writer.writeAll("**");
+                return .@"continue";
+            }
+            if (std.mem.eql(u8, el.tag, "em")) {
+                try self.writer.writeAll("*");
+                return .@"continue";
+            }
+            if (std.mem.eql(u8, el.tag, "del")) {
+                try self.writer.writeAll("~~");
+                return .@"continue";
+            }
+            if (std.mem.eql(u8, el.tag, "code")) {
+                try writeInlineCode(self.writer, el.children);
+                return .skip_children;
+            }
+            if (std.mem.eql(u8, el.tag, "a")) {
+                try self.writer.writeByte('[');
+                return .@"continue";
+            }
+            if (std.mem.eql(u8, el.tag, "img")) {
+                try writeImage(self.writer, el.attrs);
+                return .skip_children;
+            }
+            if (std.mem.eql(u8, el.tag, "br")) {
+                try self.writer.writeAll("  \n");
+                try self.writer.writeAll(self.prefix());
+                return .skip_children;
+            }
+
+            // Unknown tag — render children without wrapper.
+            return .@"continue";
+        }
+
+        pub fn elementClose(self: *Self, el: Element) !void {
+            if (heading_levels.has(el.tag)) {
+                try self.writer.writeByte('\n');
+            } else if (std.mem.eql(u8, el.tag, "p")) {
+                try self.writer.writeByte('\n');
+            } else if (std.mem.eql(u8, el.tag, "blockquote")) {
+                self.popFrame();
+            } else if (std.mem.eql(u8, el.tag, "strong")) {
+                try self.writer.writeAll("**");
+            } else if (std.mem.eql(u8, el.tag, "em")) {
+                try self.writer.writeAll("*");
+            } else if (std.mem.eql(u8, el.tag, "del")) {
+                try self.writer.writeAll("~~");
+            } else if (std.mem.eql(u8, el.tag, "a")) {
+                try writeLinkTail(self.writer, el.attrs);
+            }
+        }
+
+        // ── List rendering (skip_children, manual iteration) ─────────
+        //
+        // Lists use .skip_children because list-item children need custom
+        // inline/block mixed handling that differs from standard block
+        // separation. Nested content is walked via renderWalk re-entry.
+        //
+        // Explicit anyerror breaks the error-set inference cycle:
+        // renderWalk → elementOpen → renderList → renderWalk.
+        // The compiler knows this signature without analysing the body,
+        // so the cycle resolves.
+
+        fn renderList(self: *Self, el: Element) anyerror!void {
+            const ordered = std.mem.eql(u8, el.tag, "ol");
+            const indent = if (ordered) "   " else "  ";
+            var n: usize = 1;
+
+            for (el.children) |child| {
+                const items: []const Node = switch (child) {
+                    .element => @as(*const [1]Node, &child),
+                    .fragment => |f| f,
+                    else => continue,
+                };
+                for (items) |item| {
+                    const li = switch (item) {
+                        .element => |li_el| if (std.mem.eql(u8, li_el.tag, "li")) li_el else continue,
                         else => continue,
                     };
-                    for (items) |item| {
-                        const li = switch (item) {
-                            .element => |el| if (std.mem.eql(u8, el.tag, "li")) el else continue,
-                            else => continue,
-                        };
-                        try writeListMarker(writer, ctx.prefix, ordered, n, li.attrs);
-                        var buf: [256]u8 = undefined;
-                        var inner = childContext(&buf, ctx.prefix, indent);
+                    try writeListMarker(self.writer, self.prefix(), ordered, n, li.attrs);
 
-                        // Mixed inline + block children: inline flows on the
-                        // marker line, blocks start on new lines.
-                        var had_inline = false;
-                        var emitted_any = false;
-                        for (li.children) |li_child| {
-                            if (isBlockNode(li_child)) {
-                                if (!emitted_any or had_inline) try writer.writeByte('\n');
-                                had_inline = false;
-                                try renderNode(li_child, writer, &inner);
-                                emitted_any = true;
-                            } else {
-                                try renderNode(li_child, writer, &inner);
-                                had_inline = true;
-                                emitted_any = true;
-                            }
+                    const saved_prev = self.has_prev_block;
+                    self.has_prev_block = false;
+                    self.pushPrefix(indent);
+
+                    // Mixed inline + block children: inline flows on the
+                    // marker line, blocks start on new lines.
+                    var had_inline = false;
+                    var emitted_any = false;
+                    for (li.children) |li_child| {
+                        if (isBlockNode(li_child)) {
+                            if (!emitted_any or had_inline) try self.writer.writeByte('\n');
+                            had_inline = false;
+                            try ztree.renderWalk(self, li_child);
+                            emitted_any = true;
+                        } else {
+                            try ztree.renderWalk(self, li_child);
+                            had_inline = true;
+                            emitted_any = true;
                         }
-                        if (had_inline or !endsWithNewline(li.children)) {
-                            try writer.writeByte('\n');
-                        }
-                        n += 1;
                     }
+                    if (had_inline or !endsWithNewline(li.children)) {
+                        try self.writer.writeByte('\n');
+                    }
+
+                    self.prefix_len -= indent.len;
+                    self.has_prev_block = saved_prev;
+                    n += 1;
                 }
-            } else if (std.mem.eql(u8, e.tag, "pre")) {
-                const info = extractCodeInfo(e);
-                try writeCodeBlock(writer, ctx.prefix, info.language, info.content);
-            } else if (std.mem.eql(u8, e.tag, "hr")) {
-                try writeThematicBreak(writer, ctx.prefix);
-            } else if (std.mem.eql(u8, e.tag, "table")) {
-                const t = extractTableSections(e.children);
-                try writeTable(t.thead, t.tbody, writer, ctx);
-            } else if (std.mem.eql(u8, e.tag, "strong")) {
-                try writer.writeAll("**");
-                for (e.children) |child| try renderNode(child, writer, ctx);
-                try writer.writeAll("**");
-            } else if (std.mem.eql(u8, e.tag, "em")) {
-                try writer.writeAll("*");
-                for (e.children) |child| try renderNode(child, writer, ctx);
-                try writer.writeAll("*");
-            } else if (std.mem.eql(u8, e.tag, "del")) {
-                try writer.writeAll("~~");
-                for (e.children) |child| try renderNode(child, writer, ctx);
-                try writer.writeAll("~~");
-            } else if (std.mem.eql(u8, e.tag, "code")) {
-                try writeInlineCode(writer, e.children);
-            } else if (std.mem.eql(u8, e.tag, "a")) {
-                try writer.writeByte('[');
-                for (e.children) |child| try renderNode(child, writer, ctx);
-                try writeLinkTail(writer, e.attrs);
-            } else if (std.mem.eql(u8, e.tag, "img")) {
-                try writeImage(writer, e.attrs);
-            } else if (std.mem.eql(u8, e.tag, "br")) {
-                try writer.writeAll("  \n");
-                try writer.writeAll(ctx.prefix);
-            } else {
-                for (e.children) |child| try renderNode(child, writer, ctx);
             }
-        },
-    }
+        }
+    };
 }
 
 // ---------------------------------------------------------------------------
-// Leaf writers — write output, never call renderNode
+// Leaf writers — write output, never recurse into the tree
 // ---------------------------------------------------------------------------
-
-/// Emit a blank line between consecutive block elements.
-fn separateBlock(tag: []const u8, writer: anytype, ctx: *Context) !void {
-    if (!block_tags.has(tag)) return;
-    if (ctx.has_prev_block) {
-        try writer.writeAll(ctx.prefix);
-        try writer.writeByte('\n');
-    }
-    ctx.has_prev_block = true;
-}
 
 /// Write ATX heading prefix: `### `.
-fn writeHeadingPrefix(writer: anytype, prefix: []const u8, level: u8) !void {
-    try writer.writeAll(prefix);
+fn writeHeadingPrefix(writer: anytype, pfx: []const u8, level: u8) !void {
+    try writer.writeAll(pfx);
     for (0..level) |_| try writer.writeByte('#');
     try writer.writeByte(' ');
 }
 
 /// Write list-item marker: `- `, `1. `, with optional task checkbox.
-fn writeListMarker(writer: anytype, prefix: []const u8, ordered: bool, index: usize, attrs: []const Attr) !void {
-    try writer.writeAll(prefix);
+fn writeListMarker(writer: anytype, pfx: []const u8, ordered: bool, index: usize, attrs: []const Attr) !void {
+    try writer.writeAll(pfx);
     if (ordered) {
         try writeOrderedNumber(writer, index);
     } else {
@@ -195,7 +289,7 @@ fn writeListMarker(writer: anytype, prefix: []const u8, ordered: bool, index: us
     }
     const is_task = hasAttr(attrs, "task") or hasAttr(attrs, "checked");
     if (is_task) {
-        if (hasBooleanAttr(attrs, "checked")) {
+        if (hasAttr(attrs, "checked")) {
             try writer.writeAll("[x] ");
         } else {
             try writer.writeAll("[ ] ");
@@ -206,39 +300,39 @@ fn writeListMarker(writer: anytype, prefix: []const u8, ordered: bool, index: us
 /// Write `1. ` (with the actual number).
 fn writeOrderedNumber(writer: anytype, index: usize) !void {
     var buf: [20]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "{d}. ", .{index}) catch "1. ";
+    const s = std.fmt.bufPrint(&buf, "{d}. ", .{index}) catch unreachable;
     try writer.writeAll(s);
 }
 
 /// Write a fenced code block with optional language.
-fn writeCodeBlock(writer: anytype, prefix: []const u8, language: []const u8, content: []const u8) !void {
+fn writeCodeBlock(writer: anytype, pfx: []const u8, language: []const u8, content: []const u8) !void {
     const fence = chooseFence(content);
-    try writer.writeAll(prefix);
+    try writer.writeAll(pfx);
     try writer.writeAll(fence);
     try writer.writeAll(language);
     try writer.writeByte('\n');
-    try writePrefixedLines(content, writer, prefix);
-    try writer.writeAll(prefix);
+    try writePrefixedLines(content, writer, pfx);
+    try writer.writeAll(pfx);
     try writer.writeAll(fence);
     try writer.writeByte('\n');
 }
 
 /// Write `---\n`.
-fn writeThematicBreak(writer: anytype, prefix: []const u8) !void {
-    try writer.writeAll(prefix);
+fn writeThematicBreak(writer: anytype, pfx: []const u8) !void {
+    try writer.writeAll(pfx);
     try writer.writeAll("---\n");
 }
 
-/// Write backtick-wrapped inline code.
+/// Write backtick-wrapped inline code, iterating all text/raw children.
 fn writeInlineCode(writer: anytype, children: []const Node) !void {
-    const content = collectText(children);
-    if (std.mem.indexOfScalar(u8, content, '`') != null) {
+    const has_backtick = textContains(children, '`');
+    if (has_backtick) {
         try writer.writeAll("`` ");
-        try writer.writeAll(content);
+        try writeAllText(children, writer);
         try writer.writeAll(" ``");
     } else {
         try writer.writeByte('`');
-        try writer.writeAll(content);
+        try writeAllText(children, writer);
         try writer.writeByte('`');
     }
 }
@@ -275,36 +369,36 @@ fn writeImage(writer: anytype, attrs: []const Attr) !void {
 }
 
 /// Write content line-by-line, prepending prefix to each line.
-fn writePrefixedLines(content: []const u8, writer: anytype, prefix: []const u8) !void {
+fn writePrefixedLines(content: []const u8, writer: anytype, pfx: []const u8) !void {
     if (content.len == 0) return;
     var start: usize = 0;
     for (content, 0..) |c, i| {
         if (c == '\n') {
-            try writer.writeAll(prefix);
+            try writer.writeAll(pfx);
             try writer.writeAll(content[start .. i + 1]);
             start = i + 1;
         }
     }
     if (start < content.len) {
-        try writer.writeAll(prefix);
+        try writer.writeAll(pfx);
         try writer.writeAll(content[start..]);
         try writer.writeByte('\n');
     }
 }
 
 // ---------------------------------------------------------------------------
-// Table writers — own recursion domain, never call renderNode.
-// Cell content is rendered with pipe escaping and limited inline formatting.
+// Table writers — own recursion domain for cell content.
+// Pipe escaping and limited inline formatting, no renderWalk re-entry.
 // ---------------------------------------------------------------------------
 
 /// Write a full GFM table from thead/tbody children.
-fn writeTable(thead: []const Node, tbody: []const Node, writer: anytype, ctx: *Context) !void {
+fn writeTable(thead: []const Node, tbody: []const Node, writer: anytype, pfx: []const u8) !void {
     for (thead) |child| {
         switch (child) {
             .element => |tr| {
                 if (std.mem.eql(u8, tr.tag, "tr")) {
-                    try writeTableRow(tr.children, writer, ctx);
-                    try writeSeparatorRow(tr.children, writer, ctx);
+                    try writeTableRow(tr.children, writer, pfx);
+                    try writeSeparatorRow(tr.children, writer, pfx);
                 }
             },
             else => {},
@@ -314,7 +408,7 @@ fn writeTable(thead: []const Node, tbody: []const Node, writer: anytype, ctx: *C
         switch (child) {
             .element => |tr| {
                 if (std.mem.eql(u8, tr.tag, "tr")) {
-                    try writeTableRow(tr.children, writer, ctx);
+                    try writeTableRow(tr.children, writer, pfx);
                 }
             },
             else => {},
@@ -322,8 +416,8 @@ fn writeTable(thead: []const Node, tbody: []const Node, writer: anytype, ctx: *C
     }
 }
 
-fn writeTableRow(cells: []const Node, writer: anytype, ctx: *Context) !void {
-    try writer.writeAll(ctx.prefix);
+fn writeTableRow(cells: []const Node, writer: anytype, pfx: []const u8) !void {
+    try writer.writeAll(pfx);
     try writer.writeByte('|');
     for (cells) |cell| {
         switch (cell) {
@@ -384,8 +478,8 @@ fn writePipeEscaped(text: []const u8, writer: anytype) !void {
     }
 }
 
-fn writeSeparatorRow(header_cells: []const Node, writer: anytype, ctx: *Context) !void {
-    try writer.writeAll(ctx.prefix);
+fn writeSeparatorRow(header_cells: []const Node, writer: anytype, pfx: []const u8) !void {
+    try writer.writeAll(pfx);
     try writer.writeByte('|');
     for (header_cells) |cell| {
         switch (cell) {
@@ -403,21 +497,6 @@ fn writeSeparatorRow(header_cells: []const Node, writer: anytype, ctx: *Context)
 // ---------------------------------------------------------------------------
 // Pure helpers — no writer, no side effects
 // ---------------------------------------------------------------------------
-
-/// Build a child context with an extended prefix.
-fn childContext(buf: *[256]u8, current_prefix: []const u8, suffix: []const u8) Context {
-    return .{
-        .prefix = buildPrefix(buf, current_prefix, suffix),
-        .has_prev_block = false,
-    };
-}
-
-fn buildPrefix(buf: *[256]u8, current: []const u8, suffix: []const u8) []const u8 {
-    if (current.len + suffix.len > buf.len) return current;
-    @memcpy(buf[0..current.len], current);
-    @memcpy(buf[current.len..][0..suffix.len], suffix);
-    return buf[0 .. current.len + suffix.len];
-}
 
 /// Extract language and content from a `pre > code` element.
 const CodeInfo = struct { language: []const u8, content: []const u8 };
@@ -501,14 +580,8 @@ fn hasAttr(attrs: []const Attr, key: []const u8) bool {
     return false;
 }
 
-fn hasBooleanAttr(attrs: []const Attr, key: []const u8) bool {
-    for (attrs) |a| {
-        if (std.mem.eql(u8, a.key, key) and a.value == null) return true;
-    }
-    return false;
-}
-
-/// Collect text content from children (first text/raw node).
+/// Return the first text or raw content from a flat children list.
+/// Used by extractCodeInfo for `pre > code` content (single text child).
 fn collectText(children: []const Node) []const u8 {
     for (children) |child| {
         switch (child) {
@@ -518,6 +591,32 @@ fn collectText(children: []const Node) []const u8 {
         }
     }
     return "";
+}
+
+/// Write all text/raw content from children to writer. Handles multiple
+/// text nodes (e.g. from TreeBuilder producing separate text events).
+fn writeAllText(children: []const Node, writer: anytype) !void {
+    for (children) |child| {
+        switch (child) {
+            .text => |t| try writer.writeAll(t),
+            .raw => |r| try writer.writeAll(r),
+            .fragment => |frag| try writeAllText(frag, writer),
+            else => {},
+        }
+    }
+}
+
+/// Check whether any text/raw child contains a specific byte.
+fn textContains(children: []const Node, needle: u8) bool {
+    for (children) |child| {
+        switch (child) {
+            .text => |t| if (std.mem.indexOfScalar(u8, t, needle) != null) return true,
+            .raw => |r| if (std.mem.indexOfScalar(u8, r, needle) != null) return true,
+            .fragment => |frag| if (textContains(frag, needle)) return true,
+            else => {},
+        }
+    }
+    return false;
 }
 
 fn isBlockNode(node: Node) bool {
@@ -545,6 +644,7 @@ fn endsWithNewline(children: []const Node) bool {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+const TreeBuilder = ztree.TreeBuilder;
 
 fn renderToString(node: Node) ![]const u8 {
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -665,10 +765,21 @@ test "task list — checked and unchecked" {
     const a = arena.allocator();
     const md = try renderToString(try ztree.element(a, "ul", .{}, .{
         try ztree.element(a, "li", .{ .checked = {} }, .{ ztree.text("done") }),
-        try ztree.element(a, "li", .{ .task = {} },    .{ ztree.text("todo") }),
+        try ztree.element(a, "li", .{ .task = {} }, .{ ztree.text("todo") }),
     }));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("- [x] done\n- [ ] todo\n", md);
+}
+
+test "task list — checked with string value" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const md = try renderToString(try ztree.element(a, "ul", .{}, .{
+        try ztree.element(a, "li", .{ .checked = "true" }, .{ ztree.text("also done") }),
+    }));
+    defer testing.allocator.free(md);
+    try testing.expectEqualStrings("- [x] also done\n", md);
 }
 
 test "fenced code block with language" {
@@ -698,7 +809,7 @@ test "fenced code block — triple backtick escalation" {
 test "thematic break" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const md = try renderToString(try ztree.element(arena.allocator(), "hr", .{}, .{}));
+    const md = try renderToString(try ztree.closedElement(arena.allocator(), "hr", .{}));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("---\n", md);
 }
@@ -710,9 +821,9 @@ test "GFM table — alignment and pipe escaping" {
     const md = try renderToString(try ztree.element(a, "table", .{}, .{
         try ztree.element(a, "thead", .{}, .{
             try ztree.element(a, "tr", .{}, .{
-                try ztree.element(a, "th", .{},               .{ ztree.text("Name") }),
+                try ztree.element(a, "th", .{}, .{ ztree.text("Name") }),
                 try ztree.element(a, "th", .{ .@"align" = "center" }, .{ ztree.text("Age") }),
-                try ztree.element(a, "th", .{ .@"align" = "right" },  .{ ztree.text("Score") }),
+                try ztree.element(a, "th", .{ .@"align" = "right" }, .{ ztree.text("Score") }),
             }),
         }),
         try ztree.element(a, "tbody", .{}, .{
@@ -741,9 +852,9 @@ test "bold, italic, strikethrough" {
     const md = try renderToString(try ztree.element(a, "p", .{}, .{
         try ztree.element(a, "strong", .{}, .{ ztree.text("b") }),
         ztree.text(" "),
-        try ztree.element(a, "em",     .{}, .{ ztree.text("i") }),
+        try ztree.element(a, "em", .{}, .{ ztree.text("i") }),
         ztree.text(" "),
-        try ztree.element(a, "del",    .{}, .{ ztree.text("d") }),
+        try ztree.element(a, "del", .{}, .{ ztree.text("d") }),
     }));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("**b** *i* ~~d~~\n", md);
@@ -753,6 +864,33 @@ test "inline code — backtick escalation" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const md = try renderToString(try ztree.element(arena.allocator(), "code", .{}, .{ ztree.text("a`b") }));
+    defer testing.allocator.free(md);
+    try testing.expectEqualStrings("`` a`b ``", md);
+}
+
+test "inline code — multiple text children from TreeBuilder" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var b = TreeBuilder.init(arena.allocator());
+    try b.open("code", .{});
+    try b.text("hello ");
+    try b.text("world");
+    try b.close();
+    const md = try renderToString(try b.finish());
+    defer testing.allocator.free(md);
+    try testing.expectEqualStrings("`hello world`", md);
+}
+
+test "inline code — backtick in multi-child" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var b = TreeBuilder.init(arena.allocator());
+    try b.open("code", .{});
+    try b.text("a");
+    try b.text("`");
+    try b.text("b");
+    try b.close();
+    const md = try renderToString(try b.finish());
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("`` a`b ``", md);
 }
@@ -772,9 +910,8 @@ test "image with title" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const md = try renderToString(try ztree.element(a, "img",
-        .{ .src = "photo.jpg", .alt = "A photo", .title = "My photo" },
-        .{}));
+    const md = try renderToString(try ztree.closedElement(a, "img",
+        .{ .src = "photo.jpg", .alt = "A photo", .title = "My photo" }));
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("![A photo](photo.jpg \"My photo\")", md);
 }
@@ -785,7 +922,7 @@ test "hard line break" {
     const a = arena.allocator();
     const md = try renderToString(try ztree.element(a, "p", .{}, .{
         ztree.text("line one"),
-        try ztree.element(a, "br", .{}, .{}),
+        try ztree.closedElement(a, "br", .{}),
         ztree.text("line two"),
     }));
     defer testing.allocator.free(md);
