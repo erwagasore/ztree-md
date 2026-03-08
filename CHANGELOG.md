@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.1] — 2026-03-08
+
+### Other
+
+- Use `Element.getAttr()` and `Element.hasAttr()` methods from ztree v1.2.0, replacing private attribute helpers.
+- Leaf writers take `Element` instead of `[]const Attr` — simpler signatures, less indirection.
+- Remove unused `Attr` import.
+- Update ztree dependency v1.0.0 → v1.2.0.
+
 ## [0.2.0] — 2026-03-08
 
 ### Breaking Changes
