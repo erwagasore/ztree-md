@@ -15,7 +15,6 @@ const std = @import("std");
 const ztree = @import("ztree");
 const Node = ztree.Node;
 const Element = ztree.Element;
-const Attr = ztree.Attr;
 const WalkAction = ztree.WalkAction;
 
 // ---------------------------------------------------------------------------
@@ -175,7 +174,7 @@ fn MdRenderer(Writer: type) type {
                 return .@"continue";
             }
             if (std.mem.eql(u8, el.tag, "img")) {
-                try writeImage(self.writer, el.attrs);
+                try writeImage(self.writer, el);
                 return .skip_children;
             }
             if (std.mem.eql(u8, el.tag, "br")) {
@@ -202,7 +201,7 @@ fn MdRenderer(Writer: type) type {
             } else if (std.mem.eql(u8, el.tag, "del")) {
                 try self.writer.writeAll("~~");
             } else if (std.mem.eql(u8, el.tag, "a")) {
-                try writeLinkTail(self.writer, el.attrs);
+                try writeLinkTail(self.writer, el);
             }
         }
 
@@ -233,7 +232,7 @@ fn MdRenderer(Writer: type) type {
                         .element => |li_el| if (std.mem.eql(u8, li_el.tag, "li")) li_el else continue,
                         else => continue,
                     };
-                    try writeListMarker(self.writer, self.prefix(), ordered, n, li.attrs);
+                    try writeListMarker(self.writer, self.prefix(), ordered, n, li);
 
                     const saved_prev = self.has_prev_block;
                     self.has_prev_block = false;
@@ -280,16 +279,15 @@ fn writeHeadingPrefix(writer: anytype, pfx: []const u8, level: u8) !void {
 }
 
 /// Write list-item marker: `- `, `1. `, with optional task checkbox.
-fn writeListMarker(writer: anytype, pfx: []const u8, ordered: bool, index: usize, attrs: []const Attr) !void {
+fn writeListMarker(writer: anytype, pfx: []const u8, ordered: bool, index: usize, li: Element) !void {
     try writer.writeAll(pfx);
     if (ordered) {
         try writeOrderedNumber(writer, index);
     } else {
         try writer.writeAll("- ");
     }
-    const is_task = hasAttr(attrs, "task") or hasAttr(attrs, "checked");
-    if (is_task) {
-        if (hasAttr(attrs, "checked")) {
+    if (li.hasAttr("task") or li.hasAttr("checked")) {
+        if (li.hasAttr("checked")) {
             try writer.writeAll("[x] ");
         } else {
             try writer.writeAll("[ ] ");
@@ -338,9 +336,9 @@ fn writeInlineCode(writer: anytype, children: []const Node) !void {
 }
 
 /// Write `](href "title")`.
-fn writeLinkTail(writer: anytype, attrs: []const Attr) !void {
-    const href = getAttrValue(attrs, "href") orelse "";
-    const title = getAttrValue(attrs, "title");
+fn writeLinkTail(writer: anytype, el: Element) !void {
+    const href = el.getAttr("href") orelse "";
+    const title = el.getAttr("title");
     try writer.writeAll("](");
     try writer.writeAll(href);
     if (title) |t| {
@@ -352,10 +350,10 @@ fn writeLinkTail(writer: anytype, attrs: []const Attr) !void {
 }
 
 /// Write `![alt](src "title")`.
-fn writeImage(writer: anytype, attrs: []const Attr) !void {
-    const src = getAttrValue(attrs, "src") orelse "";
-    const alt = getAttrValue(attrs, "alt") orelse "";
-    const title = getAttrValue(attrs, "title");
+fn writeImage(writer: anytype, el: Element) !void {
+    const src = el.getAttr("src") orelse "";
+    const alt = el.getAttr("alt") orelse "";
+    const title = el.getAttr("title");
     try writer.writeAll("![");
     try writer.writeAll(alt);
     try writer.writeAll("](");
@@ -459,7 +457,7 @@ fn writeCellContent(children: []const Node, writer: anytype) !void {
                 } else if (std.mem.eql(u8, el.tag, "a")) {
                     try writer.writeByte('[');
                     try writeCellContent(el.children, writer);
-                    try writeLinkTail(writer, el.attrs);
+                    try writeLinkTail(writer, el);
                 } else {
                     try writeCellContent(el.children, writer);
                 }
@@ -485,7 +483,7 @@ fn writeSeparatorRow(header_cells: []const Node, writer: anytype, pfx: []const u
         switch (cell) {
             .element => |el| {
                 if (std.mem.eql(u8, el.tag, "th")) {
-                    try writer.writeAll(separatorCell(el.attrs));
+                    try writer.writeAll(separatorCell(el));
                 }
             },
             else => {},
@@ -507,7 +505,7 @@ fn extractCodeInfo(e: Element) CodeInfo {
             .element => |code| {
                 if (std.mem.eql(u8, code.tag, "code")) {
                     return .{
-                        .language = languageFromClass(code.attrs),
+                        .language = languageFromClass(code),
                         .content = collectText(code.children),
                     };
                 }
@@ -553,32 +551,20 @@ fn containsTripleBackticks(content: []const u8) bool {
 }
 
 /// Return separator cell markup based on alignment attr.
-fn separatorCell(attrs: []const Attr) []const u8 {
-    const a = getAttrValue(attrs, "align") orelse return " --- |";
+fn separatorCell(el: Element) []const u8 {
+    const a = el.getAttr("align") orelse return " --- |";
     if (std.mem.eql(u8, a, "center")) return " :---: |";
     if (std.mem.eql(u8, a, "right")) return " ---: |";
     return " --- |";
 }
 
 /// Extract language from `class="language-xxx"`.
-fn languageFromClass(attrs: []const Attr) []const u8 {
-    const class = getAttrValue(attrs, "class") orelse return "";
+fn languageFromClass(el: Element) []const u8 {
+    const class = el.getAttr("class") orelse return "";
     return if (std.mem.startsWith(u8, class, "language-")) class["language-".len..] else "";
 }
 
-fn getAttrValue(attrs: []const Attr, key: []const u8) ?[]const u8 {
-    for (attrs) |a| {
-        if (std.mem.eql(u8, a.key, key)) return a.value;
-    }
-    return null;
-}
 
-fn hasAttr(attrs: []const Attr, key: []const u8) bool {
-    for (attrs) |a| {
-        if (std.mem.eql(u8, a.key, key)) return true;
-    }
-    return false;
-}
 
 /// Return the first text or raw content from a flat children list.
 /// Used by extractCodeInfo for `pre > code` content (single text child).
