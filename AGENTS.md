@@ -58,4 +58,4 @@ Use [Conventional Commits](https://www.conventionalcommits.org/).
 
 - **Entry point**: `src/root.zig` — public API.
 - **Domain**: GFM (GitHub Flavoured Markdown) renderer for ztree. Walks a `Node` tree and writes Markdown to any writer. Uses the same HTML tag names as ztree-html.
-- **Language**: Zig (0.15.x). Depends on `ztree` and `std`.
+- **Language**: Zig (0.16.x). Depends on `ztree` and `std`.

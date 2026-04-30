@@ -2,7 +2,7 @@
 
 GFM (GitHub Flavoured Markdown) renderer for [ztree](https://github.com/erwagasore/ztree). Walks a `Node` tree and writes Markdown to any writer.
 
-Uses the same HTML tag names as [ztree-html](https://github.com/erwagasore/ztree-html) — build one tree, render to multiple formats.
+Requires Zig 0.16.x and ztree v2.x. Uses the same HTML tag names as [ztree-html](https://github.com/erwagasore/ztree-html) — build one tree, render to multiple formats.
 
 ## Quickstart
 
@@ -17,28 +17,29 @@ Add to `build.zig.zon`:
 Then `zig build` to fetch. Import in your code:
 
 ```zig
+const std = @import("std");
 const ztree = @import("ztree");
 const md = @import("ztree-md");
 
-const doc = ztree.fragment(&.{
-    ztree.element("h1", &.{}, &.{ztree.text("Hello")}),
-    ztree.element("p", &.{}, &.{
+var arena = std.heap.ArenaAllocator.init(allocator);
+defer arena.deinit();
+const a = arena.allocator();
+
+const doc = try ztree.fragment(a, .{
+    try ztree.element(a, "h1", .{}, .{ztree.text("Hello")}),
+    try ztree.element(a, "p", .{}, .{
         ztree.text("A paragraph with "),
-        ztree.element("strong", &.{}, &.{ztree.text("bold")}),
+        try ztree.element(a, "strong", .{}, .{ztree.text("bold")}),
         ztree.text(" and "),
-        ztree.element("a", &.{
-            ztree.attr("href", "https://ziglang.org"),
-        }, &.{ztree.text("a link")}),
+        try ztree.element(a, "a", .{ .href = "https://ziglang.org" }, .{ztree.text("a link")}),
         ztree.text("."),
     }),
-    ztree.element("pre", &.{}, &.{
-        ztree.element("code", &.{
-            ztree.attr("class", "language-zig"),
-        }, &.{ztree.text("const x = 42;")}),
+    try ztree.element(a, "pre", .{}, .{
+        try ztree.element(a, "code", .{ .class = "language-zig" }, .{ztree.text("const x = 42;")}),
     }),
-    ztree.element("ul", &.{}, &.{
-        ztree.element("li", &.{ztree.attr("checked", null)}, &.{ztree.text("done")}),
-        ztree.element("li", &.{ztree.attr("task", null)}, &.{ztree.text("todo")}),
+    try ztree.element(a, "ul", .{}, .{
+        try ztree.element(a, "li", .{ .checked = {} }, .{ztree.text("done")}),
+        try ztree.element(a, "li", .{ .task = {} }, .{ztree.text("todo")}),
     }),
 });
 

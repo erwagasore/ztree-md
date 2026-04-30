@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Require Zig 0.16.0 or newer.
+- Update ztree dependency v1.2.0 → v2.0.0.
+- Use ztree v2's `Walker` for re-entrant list rendering instead of recursive generic `renderWalk` calls.
+- Stream fenced code block text from all text/raw children without allocation, matching `TreeBuilder` output.
+- Write heading prefixes with a static lookup table instead of repeated byte writes.
+- Update README examples to the allocator-based ztree v2 API.
+
+### Fixed
+
+- Return explicit `PrefixOverflow` / `NestingOverflow` errors instead of silently truncating deeply nested Markdown prefixes.
+- Size the ordered-list number buffer for the full 64-bit `usize` range.
+
 ## [0.2.1] — 2026-03-08
 
 ### Other
