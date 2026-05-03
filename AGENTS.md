@@ -52,10 +52,10 @@ Use [Conventional Commits](https://www.conventionalcommits.org/).
 
 - **Pure functions whenever possible.** No hidden state, no side effects. Data in, output out. Not always achievable — e.g. `render` takes a writer, which is inherently effectful — but the default posture is pure.
 - **One way to do a thing.** No aliases, no convenience wrappers, no options. One function, one output style. Follows Zig's design philosophy.
-- **`anytype` writer.** The renderer writes to any writer, not a concrete type. Matches idiomatic Zig (`std.fmt`, `std.json`). Callers choose the destination.
+- **Zig 0.16 `std.Io.Writer`.** The renderer writes to `*std.Io.Writer`. Callers choose the destination (file, socket, fixed buffer, allocating writer) and pass the Zig 0.16 writer pointer.
 
 ## Orientation
 
 - **Entry point**: `src/root.zig` — public API.
-- **Domain**: GFM (GitHub Flavoured Markdown) renderer for ztree. Walks a `Node` tree and writes Markdown to any writer. Uses the same HTML tag names as ztree-html.
-- **Language**: Zig (0.16.x). Depends on `ztree` and `std`.
+- **Domain**: GFM (GitHub Flavoured Markdown) renderer for ztree. Walks a `Node` tree and writes Markdown to a Zig 0.16 `std.Io.Writer`. Uses the same HTML tag names as ztree-html.
+- **Language**: Zig (0.16.x). Depends on `ztree` v2.1.x and `std`.

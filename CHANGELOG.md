@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking Changes
+
+- Change `render` to accept `*std.Io.Writer`, adopting Zig 0.16's IO interface for the public renderer API.
+- Expose `RenderError` as the explicit public error set for `render`.
+
+### Changed
+
+- Update ztree dependency to v2.1.0 and use `typedWalker` to preserve the renderer's explicit error set during re-entrant list traversal.
+- Optimize selected Markdown writers with Zig 0.16 `std.Io.Writer.writeVecAll` to reduce write calls.
+- Add fixed-writer coverage for allocation-free streaming and `error.WriteFailed` behavior.
+
+### Fixes
+
+- Render task lists from HTML-shaped leading checkbox `input` children emitted by ztree-parse-md.
+- Preserve ordered-list `start` attributes when rendering Markdown.
+- Preserve GFM table alignment from `style="text-align: ..."` attributes emitted by ztree-parse-md.
+
 ## [1.0.0] — 2026-04-30
 
 ### Breaking Changes
