@@ -1,13 +1,13 @@
 # Changelog
 
-## [Unreleased]
+## [2.0.0] — 2026-05-03
 
 ### Breaking Changes
 
 - Change `render` to accept `*std.Io.Writer`, adopting Zig 0.16's IO interface for the public renderer API.
 - Expose `RenderError` as the explicit public error set for `render`.
 
-### Changed
+### Other
 
 - Update ztree dependency to v2.1.0 and use `typedWalker` to preserve the renderer's explicit error set during re-entrant list traversal.
 - Optimize selected Markdown writers with Zig 0.16 `std.Io.Writer.writeVecAll` to reduce write calls.
