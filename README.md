@@ -1,8 +1,10 @@
 # ztree-md
 
-GFM (GitHub Flavoured Markdown) renderer for [ztree](https://github.com/erwagasore/ztree). Walks a `Node` tree and writes Markdown to any writer.
+GFM (GitHub Flavoured Markdown) renderer for [ztree](https://github.com/erwagasore/ztree). Walks a `Node` tree and writes Markdown to a Zig 0.16 `std.Io.Writer`.
 
-Requires Zig 0.16.x and ztree v2.x. Uses the same HTML tag names as [ztree-html](https://github.com/erwagasore/ztree-html) — build one tree, render to multiple formats.
+Requires Zig 0.16.x and ztree v2.1.x. Uses the same HTML tag names as [ztree-html](https://github.com/erwagasore/ztree-html) — build one tree, render to multiple formats. Rendering streams directly to the caller's writer and does not flush. The renderer itself performs no heap allocation; allocation behavior is determined by the caller-provided writer.
+
+The renderer accepts both native Markdown-oriented attrs and the HTML-shaped tree emitted by [ztree-parse-md](https://github.com/erwagasore/ztree-parse-md), including checkbox `input` task items, `ol start`, and table `style="text-align: ..."` alignment.
 
 ## Quickstart
 
@@ -43,7 +45,12 @@ const doc = try ztree.fragment(a, .{
     }),
 });
 
-try md.render(doc, writer);
+var out: std.Io.Writer.Allocating = .init(a);
+defer out.deinit();
+
+try md.render(doc, &out.writer);
+const markdown = try out.toOwnedSlice();
+defer a.free(markdown);
 ```
 
 Output:

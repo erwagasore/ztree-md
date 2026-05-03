@@ -10,8 +10,8 @@
     },
     .dependencies = .{
         .ztree = .{
-            .url = "git+https://github.com/erwagasore/ztree.git?ref=v2.0.0#1e19115f91257fb6086ae7c3b356216cec6bfb57",
-            .hash = "ztree-2.0.0-y2WFIkUxAQDJbMgAKf2xSk6zjOW6XP9L-Lj79H3wuB0v",
+            .url = "git+https://github.com/erwagasore/ztree.git?ref=v2.1.0#e755547300d912ef43142f51455342cf2ad780b1",
+            .hash = "ztree-2.1.0-y2WFIiZTAQBLfD_QygZF6N6IpcJXUcCTgiDjHq72Y5Q1",
         },
     },
 }
